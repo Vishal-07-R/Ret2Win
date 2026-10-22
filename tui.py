@@ -34,7 +34,36 @@ from rich.status import Status
 
 import core
 
-console = Console()
+# Rich auto-detects terminal width from the OS, but in a non-interactive or
+# wrapped/piped context (CI logs, a captured transcript, some embedded/web
+# terminals) that detection can return an enormous or meaningless column
+# count, which blows every panel out to an unusable width. Clamp it to a
+# sane maximum; real terminals wider than this just get a comfortably
+# bounded layout instead of edge-to-edge panels.
+_MAX_SANE_WIDTH = 120
+console = Console(width=min(Console().size.width, _MAX_SANE_WIDTH))
+
+
+def _first_prompt(markup: str) -> str:
+    """Read one line of input for the very first prompt of the session, in a
+    way that's safe to combine with GNU readline (see run()'s first_prompt
+    flag for why this matters only for the first call). Rich's own
+    Prompt.ask()/Console.input() print the styled prompt themselves via a
+    plain console.print(..., end=""), then call bare input(), which hands
+    off to readline if it's loaded. Readline never sees that text through
+    its own API -- the `prompt` argument is how it learns what's already on
+    the line -- so the very first time it actually reads a line in the
+    process (its setup is lazy), it can reset to column 0 and redraw from
+    its own empty idea of the line, erasing what Rich just printed; that
+    only happens once per process, which is why every later prompt is fine.
+    To dodge this, render the markup to a real ANSI string ourselves and
+    pass THAT directly as input()'s prompt argument, so readline is aware of
+    it from the start and draws/redraws it correctly itself.
+    """
+    with console.capture() as capture:
+        console.print(markup, end="")
+    ansi_prompt = capture.get()
+    return input(ansi_prompt)
 
 ASCII_BANNER = r"""
 ██████╗ ███████╗████████╗██████╗ ██╗    ██╗██╗███╗   ██╗
@@ -213,8 +242,23 @@ class RichRet2WinTUI:
                 self.analyze_binary_silent(auto_bin)
 
     def clear_screen(self):
-        """Clears the terminal screen cleanly."""
-        console.clear()
+        """Separates the previous screen from the next one.
+
+        This used to call Rich's Console.clear(), which writes a raw
+        "\\x1b[2J\\x1b[H" ANSI clear/home escape sequence. Rich only
+        suppresses that when is_dumb_terminal is set -- is_terminal isn't
+        checked -- so in a lot of real-world setups (piped output, a
+        captured transcript, many wrapped/embedded/web terminals that still
+        report isatty()==True) the escape sequence doesn't get interpreted
+        and shows up as literal garbage text, and an is_terminal check
+        turned out not to reliably tell those environments apart from a
+        real one either. Rather than guess, never emit the escape sequence
+        at all: just print a separator and let the previous screen (and
+        whatever the user just typed) scroll up naturally, with the next
+        screen starting cleanly on its own line.
+        """
+        console.print()
+        console.rule(style="dim")
 
     def set_status(self, msg: str, style: str = "green"):
         """Sets the live status message shown above the action menu."""
@@ -268,9 +312,14 @@ class RichRet2WinTUI:
             return None
 
     def render_dashboard(self):
-        """Renders the complete rich UI dashboard with gradient banner, panels, and menu."""
-        self.clear_screen()
+        """Renders the complete rich UI dashboard with gradient banner, panels, and menu.
 
+        Does not clear the screen itself: it's called once at startup (with
+        a single clear_screen() right before it, in run()) and again on
+        demand via the [m]/menu command, where it should just print inline
+        below whatever's already on screen, like any other command's
+        output, rather than wiping the scrollback.
+        """
         # 1. Gradient Title Banner & Casper Subtitle
         banner_text, sub_text = create_gradient_banner()
         console.print(Align.center(banner_text))
@@ -417,9 +466,7 @@ class RichRet2WinTUI:
 
     def action_select_binary(self):
         """Browse local ELFs or type custom binary path."""
-        self.clear_screen()
-        banner_text, _ = create_gradient_banner()
-        console.print(Align.center(banner_text))
+        console.print()
         console.print(Rule("[bold cyan]📂 Select Target Binary[/bold cyan]"))
         console.print()
 
@@ -458,9 +505,7 @@ class RichRet2WinTUI:
             self.set_status("Please select a target binary first.", "bold red")
             return
 
-        self.clear_screen()
-        banner_text, _ = create_gradient_banner()
-        console.print(Align.center(banner_text))
+        console.print()
         console.print(Rule("[bold cyan]⚡ Buffer Overflow Offset Auto-Detection[/bold cyan]"))
         console.print()
         console.print(f"Target: [bold white]{self.binary_path}[/bold white]  │  Delivery: [bold cyan]{self.input_mode}[/bold cyan]")
@@ -507,9 +552,7 @@ class RichRet2WinTUI:
 
     def action_set_win_addr(self):
         """Configure win function address or symbol."""
-        self.clear_screen()
-        banner_text, _ = create_gradient_banner()
-        console.print(Align.center(banner_text))
+        console.print()
         console.print(Rule("[bold magenta]⚙️ Configure Win Function[/bold magenta]"))
         console.print()
 
@@ -549,9 +592,21 @@ class RichRet2WinTUI:
             if self.binary_info and self.binary_info.get("ret_gadget"):
                 self.ret_gadget_str = self.binary_info["ret_gadget"]
             else:
-                custom_ret = Prompt.ask("Enter lone ret gadget address (hex)", default="0x40101a").strip()
+                # No default here: "0x40101a" previously shown as a default
+                # looked like a real detected gadget and would be silently
+                # accepted on a bare Enter, poisoning the payload with an
+                # address that has nothing to do with the user's binary.
+                custom_ret = Prompt.ask(
+                    "Enter lone ret gadget address (hex, no gadget auto-detected)",
+                    default=""
+                ).strip()
                 if custom_ret:
                     self.ret_gadget_str = custom_ret
+                else:
+                    self.set_status(
+                        "No ret gadget set -- alignment enabled but payload will NOT include a gadget.",
+                        "yellow"
+                    )
         state = "Enabled" if self.align else "Disabled"
         self.set_status(f"16-byte stack alignment: {state}", "bold green" if self.align else "yellow")
 
@@ -562,9 +617,7 @@ class RichRet2WinTUI:
 
     def action_set_destination(self):
         """Configure exploit destination: local, remote, or file."""
-        self.clear_screen()
-        banner_text, _ = create_gradient_banner()
-        console.print(Align.center(banner_text))
+        console.print()
         console.print(Rule("[bold cyan]🌐 Configure Exploit Destination[/bold cyan]"))
         console.print()
         console.print("  [bold cyan][1][/bold cyan] Launch Local Process (interactive tty session)")
@@ -611,12 +664,11 @@ class RichRet2WinTUI:
             payload=payload,
             offset=self.offset,
             has_align=self.align,
-            bits=bits
+            bits=bits,
+            ret_gadget=ret_g_parsed
         )
 
-        self.clear_screen()
-        banner_text, _ = create_gradient_banner()
-        console.print(Align.center(banner_text))
+        console.print()
         console.print(Rule("[bold cyan]🔍 Payload Inspector & Colorized Hexdump[/bold cyan]"))
         console.print()
         console.print(table)
@@ -655,9 +707,7 @@ class RichRet2WinTUI:
                 self.set_status(f"Failed to read symbols: {e}", "bold red")
                 return
 
-        self.clear_screen()
-        banner_text, _ = create_gradient_banner()
-        console.print(Align.center(banner_text))
+        console.print()
         console.print(Rule("[bold cyan]🏛️ ELF Symbol Browser[/bold cyan]"))
         console.print()
 
@@ -716,9 +766,7 @@ class RichRet2WinTUI:
             input_mode=self.input_mode
         )
 
-        self.clear_screen()
-        banner_text, _ = create_gradient_banner()
-        console.print(Align.center(banner_text))
+        console.print()
         console.print(Rule("[bold green]📜 Generated Standalone solve.py[/bold green]"))
         console.print()
         console.print(Syntax(script_code, "python", theme="monokai", line_numbers=True))
@@ -776,6 +824,13 @@ class RichRet2WinTUI:
             self.set_status("Offset and win address must be configured before firing.", "bold red")
             return
 
+        if self.target_mode == "local" and (not self.binary_path or not os.path.isfile(self.binary_path)):
+            self.set_status("Destination is Local Process, but no valid binary is selected.", "bold red")
+            return
+        if self.target_mode == "remote" and (not self.remote_host or not self.remote_port):
+            self.set_status("Destination is Remote Service, but host/port are not set.", "bold red")
+            return
+
         bits = self.binary_info["bits"] if self.binary_info else 64
         ret_g_parsed = self._get_parsed_ret_gadget() if self.align else None
 
@@ -792,9 +847,7 @@ class RichRet2WinTUI:
             self.action_generate_payload()
             return
 
-        self.clear_screen()
-        banner_text, _ = create_gradient_banner()
-        console.print(Align.center(banner_text))
+        console.print()
         console.print(Rule("[bold red]🔥 Confirm Exploit Execution[/bold red]"))
         console.print()
         console.print(f"Target:       [bold cyan]{dest_desc}[/bold cyan]")
@@ -806,6 +859,24 @@ class RichRet2WinTUI:
 
         if not Confirm.ask("[bold red]Fire exploit now?[/bold red]", default=True):
             self.set_status("Exploit cancelled by user.", "yellow")
+            return
+
+        # argv[] entries are NUL-terminated C strings, so a payload with an
+        # embedded null byte before its final byte can never be delivered
+        # whole via argv -- a kernel/execve limitation, not something this
+        # tool can route around. Most 64-bit addresses pack with trailing
+        # 0x00 bytes, so this is common rather than an edge case; catch it
+        # with a clear message instead of a raw pwntools exception below.
+        if self.target_mode == "local" and self.input_mode == "argv" and b"\x00" in payload[:-1]:
+            console.print(
+                "\n[bold red][!] This payload contains a null byte before its "
+                "final byte, so it cannot be passed whole as an argv[] "
+                "argument (argv strings are NUL-terminated). Switch delivery "
+                "to stdin (if supported by the target) or pick a win "
+                "address/gadget without embedded null bytes.[/bold red]"
+            )
+            Prompt.ask("[dim]Press Enter to return to Ret2Win TUI...[/dim]", default="")
+            self.set_status("Exploit aborted: argv payload contains null bytes.", "bold red")
             return
 
         console.print("\n" + "=" * 65)
@@ -854,9 +925,7 @@ class RichRet2WinTUI:
 
     def action_show_help(self):
         """Displays help, Ret2Win concepts, and CTF guide."""
-        self.clear_screen()
-        banner_text, _ = create_gradient_banner()
-        console.print(Align.center(banner_text))
+        console.print()
         console.print(Rule("[bold cyan]📖 Ret2Win Exploitation & CTF Guide[/bold cyan]"))
         console.print()
 
@@ -889,11 +958,32 @@ Type any menu number [1-9], letter [s, g, f, r, h, q], or command name at the pr
         Prompt.ask("\n[dim]Press Enter to return to main dashboard...[/dim]", default="")
 
     def run(self):
-        """Main interactive application loop."""
+        """Main interactive application loop.
+
+        The banner/panels/menu dashboard is printed once here at the start,
+        not re-rendered on every loop iteration: it's meant to be a static
+        header, with everything below it (prompts, action output, status
+        updates) behaving like a normal scrolling CLI session rather than a
+        full-screen redraw on every command. Type [m] any time to print the
+        dashboard again if it's scrolled out of view.
+        """
+        self.clear_screen()
+        self.render_dashboard()
+
+        # This loop's prompt is always the very first prompt read anywhere
+        # in the process (nothing else runs before the user's first command
+        # is dispatched), which makes it the one call site affected by the
+        # readline first-redisplay quirk explained in _first_prompt(). Every
+        # later prompt -- including this same one on the 2nd+ iteration --
+        # is unaffected, so only the first iteration needs the workaround.
+        first_prompt = True
         while True:
-            self.render_dashboard()
             try:
-                cmd = Prompt.ask("[bold bright_cyan]ret2win[/bold bright_cyan] [dim]➜[/dim]").strip().lower()
+                if first_prompt:
+                    cmd = _first_prompt("[bold bright_cyan]ret2win[/bold bright_cyan] [dim]➜[/dim]: ").strip().lower()
+                    first_prompt = False
+                else:
+                    cmd = Prompt.ask("[bold bright_cyan]ret2win[/bold bright_cyan] [dim]➜[/dim]").strip().lower()
             except (KeyboardInterrupt, EOFError):
                 console.print("\n[dim]Exiting Ret2Win. Happy hacking![/dim]")
                 break
@@ -929,10 +1019,18 @@ Type any menu number [1-9], letter [s, g, f, r, h, q], or command name at the pr
                 self.action_run_solve_script()
             elif cmd in ("h", "help", "?"):
                 self.action_show_help()
+            elif cmd in ("m", "menu", "dashboard"):
+                self.render_dashboard()
+                continue
             elif cmd == "":
                 continue
             else:
-                self.set_status(f"Unknown action '{cmd}'. Type [h] for help or select 1-9, s, g, f, q.", "yellow")
+                self.set_status(f"Unknown action '{cmd}'. Type [h] for help, [m] for the menu, or select 1-9, s, g, f, q.", "yellow")
+
+            # Print a short status line after each action instead of
+            # redrawing the whole dashboard, so the session scrolls like an
+            # ordinary CLI tool rather than clearing/repainting every time.
+            console.print(f" [dim]Status:[/dim] [{self.last_status_style}]{self.last_status_msg}[/{self.last_status_style}]")
 
 
 def launch_tui(

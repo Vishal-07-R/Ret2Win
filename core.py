@@ -39,6 +39,84 @@ __all__ = [
 ]
 
 
+# Keywords used to flag likely win()/flag()/shell() style CTF target functions.
+# NOTE: "cat" was deliberately removed -- it is too short/common a substring
+# and false-matched ordinary symbol names like "relocate", "allocate",
+# "indicate", "location" and libc's "strcat"/"strncat", polluting the
+# candidate list (and, since auto-fill used to take the first match, could
+# silently point the exploit at the wrong function entirely).
+WIN_KEYWORDS = [
+    "win", "flag", "target", "secret", "shell", "spawn",
+    "print", "admin", "backdoor", "pwn", "get_flag",
+    "give_shell", "system", "print_flag", "callme"
+]
+
+# Common libc / PLT import names that incidentally contain one of the
+# keywords above as a substring (e.g. "printf" contains "print", "strcat"
+# contains "cat") but are never themselves a CTF win-style target. Without
+# this guard they pollute the candidate list, and -- because auto-fill used
+# to just take the first (lowest-address) candidate -- could get silently
+# auto-selected as the win() target instead of the real target function.
+NOISE_SYMBOLS = {
+    "printf", "fprintf", "sprintf", "snprintf",
+    "vprintf", "vfprintf", "vsprintf", "vsnprintf",
+    "wprintf", "fwprintf", "swprintf",
+    "scanf", "fscanf", "sscanf",
+    "strcat", "strncat",
+}
+
+# When several real candidates are found, these exact names (in priority
+# order) are the most conventional CTF win-function names, so auto-fill
+# should prefer them over an arbitrary address-ordered pick.
+_PRIORITY_NAMES = [
+    "win", "get_flag", "print_flag", "give_flag", "give_shell",
+    "flag", "shell", "backdoor", "callme", "pwn", "system",
+]
+
+
+def _is_noise_symbol(name: str) -> bool:
+    """True if `name` (optionally 'plt.'-prefixed) is a known libc/PLT import
+    that should never be treated as a win() candidate, even if it happens to
+    contain one of WIN_KEYWORDS as a substring."""
+    base = name[4:] if name.startswith("plt.") else name
+    return base in NOISE_SYMBOLS
+
+
+def _find_win_candidates(elf) -> List[Dict[str, str]]:
+    """Scan an ELF's symbol table for likely win()-style target functions,
+    filtering out common libc noise and prioritizing conventional names."""
+    candidates: List[Dict[str, str]] = []
+    seen = set()
+
+    for name, addr in sorted(elf.symbols.items(), key=lambda x: x[1]):
+        # Guard against non-string keys (modern pwntools may have integer keys)
+        if not isinstance(name, str):
+            continue
+        # Filter out noisy GOT and internal wrappers
+        if name.startswith("got.") or name.startswith("_"):
+            continue
+        lower_name = name.lower()
+        if _is_noise_symbol(lower_name):
+            continue
+        if any(k in lower_name for k in WIN_KEYWORDS):
+            if name not in seen:
+                seen.add(name)
+                candidates.append({"name": name, "addr": hex(addr)})
+
+    # Stable-sort so that conventionally-named win functions (exact matches
+    # in _PRIORITY_NAMES) come first; ties keep their original address order.
+    def _priority(c: Dict[str, str]) -> int:
+        base = c["name"][4:] if c["name"].lower().startswith("plt.") else c["name"]
+        base = base.lower()
+        try:
+            return _PRIORITY_NAMES.index(base)
+        except ValueError:
+            return len(_PRIORITY_NAMES)
+
+    candidates.sort(key=_priority)
+    return candidates
+
+
 def clean_core_dumps():
     """Remove leftover core dump files (e.g. core, core.12345) from working directory."""
     for pattern in ["core", "core.[0-9]*"]:
@@ -60,27 +138,7 @@ def analyze_binary(path: str) -> Dict[str, Any]:
     elf = ELF(path, checksec=False)
     bits = 64 if elf.bits == 64 else 32
 
-    # Identify candidate win / flag / shell functions in symbols
-    keywords = [
-        "win", "flag", "target", "secret", "shell", "spawn",
-        "cat", "print", "admin", "backdoor", "pwn", "get_flag",
-        "give_shell", "system", "print_flag", "callme"
-    ]
-    candidates: List[Dict[str, str]] = []
-    seen = set()
-
-    for name, addr in sorted(elf.symbols.items(), key=lambda x: x[1]):
-        # Guard against non-string keys (modern pwntools may have integer keys)
-        if not isinstance(name, str):
-            continue
-        # Filter out noisy GOT and internal wrappers
-        if name.startswith("got.") or name.startswith("_"):
-            continue
-        lower_name = name.lower()
-        if any(k in lower_name for k in keywords):
-            if name not in seen:
-                seen.add(name)
-                candidates.append({"name": name, "addr": hex(addr)})
+    candidates = _find_win_candidates(elf)
 
     # Search for a lone ret gadget for x86_64 stack alignment
     ret_gadget = None
@@ -316,14 +374,23 @@ def format_payload_breakdown(offset: int, win_addr: int, bits: int = 64, align: 
     return payload, table
 
 
-def format_colorized_hexdump(payload: bytes, offset: int, has_align: bool = False, bits: int = 64) -> Text:
+def format_colorized_hexdump(payload: bytes, offset: int, has_align: bool = False, bits: int = 64,
+                              ret_gadget: Optional[int] = None) -> Text:
     """
     Renders a colorized hexdump highlighting:
     - Red: Buffer junk padding
     - Yellow: Alignment ret gadget
     - Green: Target win address
+
+    `ret_len` must mirror the exact condition build_payload()/format_payload_breakdown()
+    use to decide whether the 8-byte ret-gadget was actually written into the payload
+    (bits == 64 AND has_align AND a ret_gadget address is set). Keying this off
+    `has_align` alone -- regardless of whether a gadget address was ever available --
+    previously caused the first 8 bytes of the win address to be mislabeled as the
+    "ret gadget" (yellow) instead of the win address (green) whenever alignment was
+    toggled on but no gadget had been configured.
     """
-    ret_len = 8 if (has_align and bits == 64) else 0
+    ret_len = 8 if (has_align and bits == 64 and ret_gadget is not None) else 0
     win_len = 8 if bits == 64 else 4
 
     text = Text()
@@ -435,12 +502,6 @@ def get_elf_functions(path: str) -> List[Dict]:
     functions: List[Dict] = []
     seen = set()
 
-    keywords = [
-        "win", "flag", "target", "secret", "shell", "spawn",
-        "cat", "print", "admin", "backdoor", "pwn", "get_flag",
-        "give_shell", "system", "print_flag", "callme"
-    ]
-
     for name, addr in sorted(elf.symbols.items(), key=lambda x: x[1]):
         if not isinstance(name, str):
             continue
@@ -448,7 +509,8 @@ def get_elf_functions(path: str) -> List[Dict]:
             continue
         if name not in seen:
             seen.add(name)
-            is_cand = any(k in name.lower() for k in keywords)
+            lower_name = name.lower()
+            is_cand = (not _is_noise_symbol(lower_name)) and any(k in lower_name for k in WIN_KEYWORDS)
             functions.append({
                 "name": name,
                 "addr": hex(addr),
@@ -512,9 +574,12 @@ def validate_offset(binary_path: str, offset: int, input_mode: str = "stdin") ->
     if getattr(core_dump, "fault_addr", 0) == expected_num:
         matched = True
 
-    # Check 2: instruction pointer
+    # Check 2: instruction pointer (exact match only -- a masked/truncated
+    # comparison here would let a partially-overlapping marker on a wrong
+    # offset falsely "validate", since the marker bytes are a repeating
+    # 0x42 pattern that can coincidentally share low bits with a near-miss)
     ip = core_dump.rip if bits == 64 else core_dump.eip
-    if ip == expected_num or (ip & 0xFFFFFFFF) == (expected_num & 0xFFFFFFFF):
+    if ip == expected_num:
         matched = True
 
     # Check 3: stack value at SP or SP-8
