@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ret2win"
-version = "1.3.2"
+version = "1.3.3"
 description = "Automated CTF Return-to-Win Exploitation Toolkit & Interactive Rich TUI"
 readme = "README.md"
 authors = [

@@ -17,7 +17,7 @@
 
 <p align="center">
   <a href="https://pypi.org/project/ret2win/"><img src="https://img.shields.io/pypi/v/ret2win.svg?style=for-the-badge&logo=pypi&logoColor=white" alt="PyPI Version" /></a>
-  <a href="https://github.com/Vishal-07-R/Ret2Win/releases"><img src="https://img.shields.io/badge/version-1.3.2-blue.svg?style=for-the-badge&logo=git&logoColor=white" alt="Version 1.3.2" /></a>
+  <a href="https://github.com/Vishal-07-R/Ret2Win/releases"><img src="https://img.shields.io/badge/version-1.3.3-blue.svg?style=for-the-badge&logo=git&logoColor=white" alt="Version 1.3.3" /></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.8%2B-blueviolet.svg?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.8+" /></a>
   <a href="https://github.com/Gallopsled/pwntools"><img src="https://img.shields.io/badge/Powered%20By-Pwntools%20%26%20Rich-ff69b4.svg?style=for-the-badge" alt="Pwntools & Rich" /></a>
   <a href="https://github.com/Vishal-07-R/Ret2Win/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge" alt="License MIT" /></a>
@@ -42,116 +42,46 @@ Available both as a **rich, split-scrolling Cyberpunk Terminal User Interface (T
 
 ---
 
-## ✨ Features
+## 🖥️ Interactive Terminal UI
 
-- 🎯 **Automated Zero-Guesswork Offset Detection**
-  - Injects De Bruijn cyclic patterns and captures crash state via Linux core dumps.
-  - Automatically inspects `RIP`, `EIP`, `PC`, `RSP`, and stack frames.
-  - Built-in fallback engine directly queries GDB if kernel core dumping is restricted.
-  - Includes offset validation (`--validate-offset`) to verify control flow redirection with canary crash markers before firing.
-
-- 🛡️ **Instant Checksec & ELF Mitigation Auditing**
-  - Inspects Canary, NX (Non-Executable Stack), PIE (Position Independent Executable), RELRO (Partial/Full), and Fortify.
-  - Automatically warns if a PIE binary requires runtime base address resolution.
-
-- 🔎 **Smart Win Symbol Discovery**
-  - Scans symbol tables and strings for CTF win candidates (`win`, `flag`, `shell`, `print_flag`, `get_flag`, `system`, `vuln_target`, `backdoor`, etc.).
-  - Interactive symbol browser to inspect and select any function symbol directly.
-
-- 📐 **Automatic x86_64 Stack Alignment & Lone `ret` Hunting**
-  - Fixes the notorious x86_64 `movaps` crash on modern libc (`system()`, `puts()`, `do_system` requiring 16-byte aligned stacks).
-  - Automatically harvests lone `ret` gadgets (`0xc3`) using ROP gadgets and binary opcode inspection.
-
-- 🎮 **Cyberpunk Interactive Terminal UI (TUI)**
-  - Pinned dashboard featuring live status messages, binary mitigation status, payload stats, and quick actions.
-  - Native DECSTBM scroll region support: dashboard stays pinned on top while your interactive prompts and command output scroll smoothly below.
-  - Dynamic hotkeys for binary loading, offset tuning, win target selection, and payload inspection.
-
-- 🔬 **Colorized Split Hexdump & Payload Breakdown**
-  - Real-time payload visualizer with colored byte breakdowns:
-    - 🟦 **Padding bytes** (`0x41` 'A' pattern)
-    - 🟨 **Stack Alignment Gadget** (Lone `ret`)
-    - 🟩 **Target Return Address** (`win` entrypoint)
-  - Detailed breakdown table listing offsets, byte lengths, and target hex values.
-
-- 🚀 **1-Click Multi-Target Deployment & Code Generation**
-  - **Local Execution**: Launches the binary locally in a PTY and hands control over to an interactive shell (`io.interactive()`).
-  - **GDB Debugger Session**: Spawns GDB attached to the target binary with your payload pre-loaded.
-  - **Remote Server Attack**: Connects over TCP sockets to remote challenge servers (`HOST:PORT`) and captures the flag.
-  - **Clean `solve.py` Exporter**: Generates a self-contained, documented Python pwntools solve script ready for your CTF writeup.
-
-- 🌐 **Multi-Architecture & Cross-Emulation Ready**
-  - Fully supports `x86_64`, `i386`, `ARM`, `AArch64`, `MIPS`, `RISC-V`.
-  - Integrates with QEMU user-mode emulation (`qemu-arm`, `qemu-mips`, etc.) and detects `binfmt_misc`.
-
-- 📋 **Integrated Clipboard & In-App Pager**
-  - One-click payload copying to system clipboard via `wl-clipboard` (Wayland), `xclip` / `xsel` (X11), or `pbcopy` (macOS).
-  - Built-in multi-topic CTF manual and keyboard documentation viewable via pager (`less`).
-
----
-
-## 🏗️ Architecture & Exploitation Workflow
-
-```mermaid
-flowchart TD
-    A["Target Binary Ingestion (ELF)"] --> B["Checksec & Mitigation Audit\n(NX, Canary, PIE, RELRO)"]
-    B --> C["Smart Symbol Harvester\n(win, flag, shell, system)"]
-    
-    C --> D{"Offset Strategy"}
-    D -->|"Manual / Known"| F["Set Offset Directly"]
-    D -->|"Auto-Detect"| E["Inject De Bruijn Cyclic Pattern"]
-    
-    E --> E1["Trigger Memory Crash"]
-    E1 --> E2["Kernel Core Dump\nor GDB Crash Engine"]
-    E2 --> E3["Extract Saved IP / SP\nvia cyclic_find()"]
-    E3 --> F
-    
-    F --> G{"Target Architecture"}
-    G -->|"x86_64 (amd64)"| H["Stack Alignment Check\n(16-byte boundary)"]
-    H --> H1["Harvest Lone `ret` Gadget\n(Prevent movaps crash)"]
-    H1 --> I["Synthesize Exploit Payload"]
-    G -->|"32-bit / Others"| I
-    
-    I --> J["Colorized Hexdump & Table Breakdown"]
-    J --> K{"Action & Delivery"}
-    
-    K -->|"Interactive TUI"| L["Direct Local Process Run\n(Spawn Shell)"]
-    K -->|"GDB Attach"| M["Launch Dynamic Debugger"]
-    K -->|"Remote Target"| N["Send over TCP (HOST:PORT)"]
-    K -->|"Export Solver"| O["Generate standalone `solve.py`"]
-```
-
----
-
-## 🖥️ Terminal UI Showcase
-
-Launch the interactive interface with a single command:
+Launch the interface with a single command:
 ```bash
 ret2win
 ```
 
 ```text
- ┌────────────────────────────────────────────────────────────────────────────────────────┐
- │  ██████╗ ███████╗████████╗██████╗ ██╗    ██╗██╗███╗   ██╗   Ret2Win CTF Exploitation   │
- │  Automated CTF Return-to-Win Exploitation Toolkit  •  made by -Casper • v1.3.2         │
- ├────────────────────────────────────────────────────────────────────────────────────────┤
- │ Target Binary : ./vuln [ELF 64-bit | x86-64 | Little Endian]                          │
- │ Mitigations   : Canary: NO | NX: YES | PIE: NO | RELRO: Partial                        │
- │ Target Symbol : win -> 0x401196                                                        │
- │ Crash Offset  : 88 bytes (Auto-detected & Verified)                                    │
- │ Alignment     : 16-Byte Stack Align Enabled (ret -> 0x40101a)                          │
- │ Delivery Mode : stdin                                                                  │
- │ Destination   : Local Process                                                          │
- │ Payload Size  : 104 bytes                                                              │
- ├────────────────────────────────────────────────────────────────────────────────────────┤
- │ [1] Select Binary    [2] Auto-Detect Offset   [3] Validate Offset  [4] Target Function │
- │ [5] Toggle Align     [6] Delivery Mode        [7] Remote Target    [8] Inspect Payload │
- │ [9] Browse Symbols   [G] Generate Payload     [F] Fire Exploit     [H] Help   [Q] Quit │
- └────────────────────────────────────────────────────────────────────────────────────────┘
+            ██████╗ ███████╗████████╗██████╗ ██╗    ██╗██╗███╗   ██╗            
+            ██╔══██╗██╔════╝╚══██╔══╝╚════██╗██║    ██║██║████╗  ██║            
+            ██████╔╝█████╗     ██║    █████╔╝██║ █╗ ██║██║██╔██╗ ██║            
+            ██╔══██╗██╔══╝     ██║   ██╔═══╝ ██║███╗██║██║██║╚██╗██║            
+            ██║  ██║███████╗   ██║   ███████╗╚███╔███╔╝██║██║ ╚████║            
+            ╚═╝  ╚═╝╚══════╝   ╚═╝   ╚══════╝ ╚══╝╚══╝ ╚═╝╚═╝  ╚═══╝            
+                                                                                
+  ─── Automated CTF Return-to-Win Exploitation Toolkit  •  made by -Casper ───  
+
+╭── [ TARGET BINARY & MITIGATIONS ] ──────────╮╭── [ EXPLOIT CONFIGURATION ] ───────────────╮
+│  Binary:        ./vuln                      ││  Win Target:   0x401196 (win)              │
+│  Architecture:  amd64 (64-bit, little)      ││  Offset:       88 bytes ✓ Validated        │
+│  Checksec:      Partial RELRO │ No Canary   ││  Stack Align:  Enabled (lone ret 0x40101a) │
+│  Mitigations:   NX Enabled    │ No PIE      ││  Delivery:     stdin (Standard Input)      │
+│  Win Candidate: win (0x401196)              ││  Destination:  Local Process (vuln)        │
+│  Ret Gadget:    0x40101a (x86_64 16B align) ││  Payload Size: 104 bytes (payload.bin)     │
+╰─────────────────────────────────────────────╯╰────────────────────────────────────────────╯
+ Status: Offset verified (88 bytes). Exploit payload compiled and armed.
+
+╭───────────────────────────────────────────────────────────────────────────────────────────╮
+│                                [ MISSION CONTROL ACTIONS ]                                │
+│   [1] Select/Scan Binary        [2] Auto-Detect Offset        [3] Validate Offset         │
+│   [4] Set Win Address/Symbol    [5] Toggle 16B Alignment      [6] Toggle Delivery (stdin) │
+│   [7] Set Exploit Destination   [8] Inspect Payload & Hexdump [9] ELF Symbol Browser      │
+│   [f] Fire Exploit & solve.py   [h] Help & CTF Guide          [q] Quit Ret2Win            │
+╰───────────────────────────────────────────────────────────────────────────────────────────╯
+
+ret2win ➜
 ```
 
 ### Colorized Payload Inspection
-Ret2Win visually separates every component of the attack buffer:
+Ret2Win visually dissects and displays the structure of the generated buffer:
 
 ```text
   00000000:  41 41 41 41 41 41 41 41  41 41 41 41 41 41 41 41   AAAAAAAAAAAAAAAA
@@ -159,9 +89,9 @@ Ret2Win visually separates every component of the attack buffer:
   00000050:  41 41 41 41 41 41 41 41  1a 10 40 00 00 00 00 00   AAAAAAAA..@.....
   00000060:  96 11 40 00 00 00 00 00                            ..@.....
 
-  Legend:
+  Breakdown:
   • 0x00 - 0x57 [88 bytes] : Cyclic Padding ('A' * 88)
-  • 0x58 - 0x5F [ 8 bytes] : Lone `ret` Gadget (0x40101a) [Stack Alignment]
+  • 0x58 - 0x5F [ 8 bytes] : Lone `ret` Gadget (0x40101a) [16-Byte Stack Alignment]
   • 0x60 - 0x67 [ 8 bytes] : Target `win()` Address (0x401196)
 ```
 
