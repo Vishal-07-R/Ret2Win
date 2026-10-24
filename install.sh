@@ -3,12 +3,12 @@
 #  Ret2Win - Automated CTF Return-to-Win Exploitation Toolkit
 #  Universal Installation & Setup Script
 #  Author: Casper (Vishal-07-R)
-#  Version: 1.3.1
+#  Version: 1.3.2
 # ==============================================================================
 
 set -e
 
-VERSION="1.3.1"
+VERSION="1.3.2"
 APP_NAME="ret2win"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -252,7 +252,11 @@ detect_os() {
     PKG_MGR="none"
     DISTRO_ID=""
 
-    if [ -f /etc/os-release ]; then
+    if [ -n "$TERMUX_VERSION" ] || [ -d "/data/data/com.termux" ]; then
+        OS_NAME="Termux (Android)"
+        DISTRO_ID="termux"
+        PKG_MGR="pkg"
+    elif [ -f /etc/os-release ]; then
         # shellcheck disable=SC1091
         . /etc/os-release
         OS_NAME="${NAME:-Linux}"
@@ -469,6 +473,11 @@ install_system_deps() {
             [ "$has_gdb" = false ] && pkg_list+=("gdb")
             [ "$has_clipboard" = false ] && pkg_list+=("wl-clipboard" "xclip")
             ;;
+        pkg)
+            [ "$has_python" = false ] && pkg_list+=("python")
+            pkg_list+=("clang" "make" "libffi" "openssl" "binutils" "python-psutil" "python-cryptography")
+            [ "$has_gdb" = false ] && pkg_list+=("gdb")
+            ;;
         apk)
             [ "$has_python" = false ] && pkg_list+=("python3" "gcc" "musl-dev")
             [ "$has_venv" = false ] && pkg_list+=("py3-virtualenv")
@@ -518,7 +527,10 @@ install_system_deps() {
                 zypper)
                     $SUDO zypper --non-interactive install "${pkg_list[@]}"
                     ;;
-                apk)
+                pkg)
+                    pkg install -y "${pkg_list[@]}"
+                    ;;
+        apk)
                     $SUDO apk add --no-cache "${pkg_list[@]}"
                     ;;
                 brew)

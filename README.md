@@ -17,7 +17,7 @@
 
 <p align="center">
   <a href="https://pypi.org/project/ret2win/"><img src="https://img.shields.io/pypi/v/ret2win.svg?style=for-the-badge&logo=pypi&logoColor=white" alt="PyPI Version" /></a>
-  <a href="https://github.com/Vishal-07-R/Ret2Win/releases"><img src="https://img.shields.io/badge/version-1.3.1-blue.svg?style=for-the-badge&logo=git&logoColor=white" alt="Version 1.3.1" /></a>
+  <a href="https://github.com/Vishal-07-R/Ret2Win/releases"><img src="https://img.shields.io/badge/version-1.3.2-blue.svg?style=for-the-badge&logo=git&logoColor=white" alt="Version 1.3.2" /></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.8%2B-blueviolet.svg?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.8+" /></a>
   <a href="https://github.com/Gallopsled/pwntools"><img src="https://img.shields.io/badge/Powered%20By-Pwntools%20%26%20Rich-ff69b4.svg?style=for-the-badge" alt="Pwntools & Rich" /></a>
   <a href="https://github.com/Vishal-07-R/Ret2Win/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge" alt="License MIT" /></a>
@@ -133,7 +133,7 @@ ret2win
 ```text
  ┌────────────────────────────────────────────────────────────────────────────────────────┐
  │  ██████╗ ███████╗████████╗██████╗ ██╗    ██╗██╗███╗   ██╗   Ret2Win CTF Exploitation   │
- │  Automated CTF Return-to-Win Exploitation Toolkit  •  made by -Casper • v1.3.1         │
+ │  Automated CTF Return-to-Win Exploitation Toolkit  •  made by -Casper • v1.3.2         │
  ├────────────────────────────────────────────────────────────────────────────────────────┤
  │ Target Binary : ./vuln [ELF 64-bit | x86-64 | Little Endian]                          │
  │ Mitigations   : Canary: NO | NX: YES | PIE: NO | RELRO: Partial                        │
@@ -242,6 +242,14 @@ sudo apt install python3 python3-pip python3-venv gdb wl-clipboard xclip qemu-us
 #### Fedora / RHEL
 ```bash
 sudo dnf install python3 python3-pip python3-virtualenv gdb wl-clipboard xclip qemu-user-static
+```
+
+#### Termux (Android)
+Because upstream `psutil` requires C-extensions that do not build on Android, install Termux's native patched packages first:
+```bash
+pkg update
+pkg install -y clang make libffi openssl binutils python-psutil python-cryptography
+pip install ret2win
 ```
 
 ---
