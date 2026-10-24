@@ -3,12 +3,12 @@
 #  Ret2Win - Automated CTF Return-to-Win Exploitation Toolkit
 #  Universal Installation & Setup Script
 #  Author: Casper (Vishal-07-R)
-#  Version: 1.3.3
+#  Version: 1.3.4
 # ==============================================================================
 
 set -e
 
-VERSION="1.3.3"
+VERSION="1.3.4"
 APP_NAME="ret2win"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -267,18 +267,20 @@ detect_os() {
         DISTRO_ID="darwin"
     fi
 
-    if command -v pacman >/dev/null 2>&1; then
-        PKG_MGR="pacman"
-    elif command -v apt-get >/dev/null 2>&1; then
-        PKG_MGR="apt"
-    elif command -v dnf >/dev/null 2>&1; then
-        PKG_MGR="dnf"
-    elif command -v zypper >/dev/null 2>&1; then
-        PKG_MGR="zypper"
-    elif command -v apk >/dev/null 2>&1; then
-        PKG_MGR="apk"
-    elif command -v brew >/dev/null 2>&1; then
-        PKG_MGR="brew"
+    if [ "$PKG_MGR" = "none" ]; then
+        if command -v pacman >/dev/null 2>&1; then
+            PKG_MGR="pacman"
+        elif command -v apt-get >/dev/null 2>&1; then
+            PKG_MGR="apt"
+        elif command -v dnf >/dev/null 2>&1; then
+            PKG_MGR="dnf"
+        elif command -v zypper >/dev/null 2>&1; then
+            PKG_MGR="zypper"
+        elif command -v apk >/dev/null 2>&1; then
+            PKG_MGR="apk"
+        elif command -v brew >/dev/null 2>&1; then
+            PKG_MGR="brew"
+        fi
     fi
 }
 
@@ -475,7 +477,7 @@ install_system_deps() {
             ;;
         pkg)
             [ "$has_python" = false ] && pkg_list+=("python")
-            pkg_list+=("clang" "make" "libffi" "openssl" "binutils" "python-psutil" "python-cryptography")
+            pkg_list+=("clang" "cmake" "make" "pkg-config" "libffi" "openssl" "binutils" "python-psutil" "python-cryptography")
             [ "$has_gdb" = false ] && pkg_list+=("gdb")
             ;;
         apk)
@@ -593,6 +595,7 @@ install_application() {
     else
         mkdir -p "${INSTALL_DIR}"
         printf "${INFO} Deploying package files to: ${WHITE}%s${RESET}\n" "$INSTALL_DIR"
+        cp -r "${SCRIPT_DIR}/ret2win" "${INSTALL_DIR}/"
         cp -u "${SCRIPT_DIR}/ret2win.py" "${INSTALL_DIR}/"
         cp -u "${SCRIPT_DIR}/core.py" "${INSTALL_DIR}/"
         cp -u "${SCRIPT_DIR}/tui.py" "${INSTALL_DIR}/"

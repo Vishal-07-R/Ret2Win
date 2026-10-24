@@ -17,7 +17,7 @@
 
 <p align="center">
   <a href="https://pypi.org/project/ret2win/"><img src="https://img.shields.io/pypi/v/ret2win.svg?style=for-the-badge&logo=pypi&logoColor=white" alt="PyPI Version" /></a>
-  <a href="https://github.com/Vishal-07-R/Ret2Win/releases"><img src="https://img.shields.io/badge/version-1.3.3-blue.svg?style=for-the-badge&logo=git&logoColor=white" alt="Version 1.3.3" /></a>
+  <a href="https://github.com/Vishal-07-R/Ret2Win/releases"><img src="https://img.shields.io/badge/version-1.3.4-blue.svg?style=for-the-badge&logo=git&logoColor=white" alt="Version 1.3.4" /></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.8%2B-blueviolet.svg?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.8+" /></a>
   <a href="https://github.com/Gallopsled/pwntools"><img src="https://img.shields.io/badge/Powered%20By-Pwntools%20%26%20Rich-ff69b4.svg?style=for-the-badge" alt="Pwntools & Rich" /></a>
   <a href="https://github.com/Vishal-07-R/Ret2Win/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge" alt="License MIT" /></a>
@@ -175,12 +175,12 @@ sudo dnf install python3 python3-pip python3-virtualenv gdb wl-clipboard xclip q
 ```
 
 #### Termux (Android)
-Because upstream `psutil` requires C-extensions that do not build on Android, install Termux's native patched packages first:
+On Android/Termux, upstream `psutil` rejects Android during PyPI source builds, and `unicorn` (required by `pwntools`) compiles native C-extensions requiring `cmake` and `clang`. Install Termux's pre-compiled and native build dependencies first:
 ```bash
-pkg update
-pkg install -y clang make libffi openssl binutils python-psutil python-cryptography
+pkg update && pkg install -y clang cmake make pkg-config libffi openssl binutils python-psutil python-cryptography
 pip install ret2win
 ```
+*(Tip: Run `ret2win --diagnostics` after installation to audit your environment).*
 
 ---
 
@@ -222,6 +222,7 @@ Ret2Win can be driven completely headless in automation pipelines, CTF scripts, 
 | `--remote` | `HOST PORT`| *None* | Connect to remote network socket, transmit payload, and open interactive shell |
 | `--script` | `PATH` | *None* | Generate a standalone, documented `solve.py` script and exit |
 | `--validate-offset` | `FLAG` | `False` | Validate computed offset with a controlled marker crash |
+| `--diagnostics`, `--check` | `FLAG` | `False` | Audit environment, compilers, Termux status, and dependencies |
 | `--tui` | `FLAG` | `False` | Launch the interactive Terminal User Interface |
 | `--no-color` | `FLAG` | `False` | Strip Rich ANSI color codes and formatting |
 | `--version` | `FLAG` | *None* | Display version information and exit |
