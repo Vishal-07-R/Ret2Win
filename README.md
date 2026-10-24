@@ -103,6 +103,8 @@ Ret2Win can be installed via **PyPI**, the **universal installer script**, or di
 
 ### Method 1: Install from PyPI (Simplest)
 
+Ret2Win is officially published on PyPI: **[https://pypi.org/project/ret2win/](https://pypi.org/project/ret2win/)**
+
 Install globally via `pipx` or inside a virtual environment:
 
 ```bash
