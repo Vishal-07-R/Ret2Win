@@ -1,0 +1,3 @@
+# Ret2Win Toolkit Dependencies
+pwntools>=4.11.0
+rich>=13.0.0

@@ -26,8 +26,8 @@ try:
 except ImportError:
     pass
 
-# Ensure local module imports work from any execution directory
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Ensure local module imports work from any execution directory or symlink resolution
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
 from rich.console import Console
 from rich.table import Table
@@ -406,13 +406,16 @@ class RichRet2WinTUI:
             self.binary_info = info
             self.binary_path = path
 
-            # Auto-configure stack alignment and ret gadget for 64-bit
-            if info["bits"] == 64:
+            # Auto-configure stack alignment and ret gadget for 64-bit AMD64 ONLY
+            if info["bits"] == 64 and info.get("arch") == "amd64":
                 self.align = True
-                if info["ret_gadget"]:
+                if info.get("ret_gadget"):
                     self.ret_gadget_str = info["ret_gadget"]
+                else:
+                    self.ret_gadget_str = ""
             else:
                 self.align = False
+                self.ret_gadget_str = ""
 
             # Auto-fill win address if candidate found and currently empty
             if not self.win_addr_str and info["candidates"]:
@@ -468,7 +471,8 @@ class RichRet2WinTUI:
             t_left.add_column("Field", style="bold cyan", width=16, no_wrap=True)
             t_left.add_column("Value", no_wrap=True)
 
-            if not self.binary_info:
+            info = self.binary_info
+            if not info:
                 bin_display = self.binary_path if self.binary_path else "[dim]No binary selected[/dim]"
                 t_left.add_row("Binary:", bin_display)
                 t_left.add_row("Architecture:", "[dim]Unknown[/dim]")
@@ -477,12 +481,16 @@ class RichRet2WinTUI:
                 t_left.add_row("Win Candidates:", "[dim]None[/dim]")
                 t_left.add_row("Ret Gadget:", "[dim]None[/dim]")
             else:
-                info = self.binary_info
                 bin_name = os.path.basename(info["path"])
                 bin_dir = os.path.dirname(info["path"]) or "."
                 short_dir = bin_dir if len(bin_dir) <= 20 else "..." + bin_dir[-17:]
                 t_left.add_row("Binary:", f"[bold white]{bin_name}[/bold white] [dim]({short_dir})[/dim]")
-                t_left.add_row("Architecture:", f"[bold bright_cyan]{info['arch']}[/bold bright_cyan] [dim]({info['bits']}-bit, {info['endian']})[/dim]")
+                arch_str = f"[bold bright_cyan]{info['arch']}[/bold bright_cyan] [dim]({info['bits']}-bit, {info['endian']})[/dim]"
+                if not info.get("executable", True):
+                    arch_str += " [bold yellow]⚠ Foreign[/bold yellow]"
+                elif info.get("exec_reason"):
+                    arch_str += " [bold green](QEMU)[/bold green]"
+                t_left.add_row("Architecture:", arch_str)
 
                 relro_tag = f"[cyan]{info['relro']}[/cyan]"
                 canary_tag = "[bold red]Canary Present[/bold red]" if info["canary"] else "[bold green]No Canary[/bold green]"
@@ -500,8 +508,11 @@ class RichRet2WinTUI:
                 else:
                     t_left.add_row("Win Candidates:", "[dim]None detected (check Symbol Browser)[/dim]")
 
-                ret_g = self.ret_gadget_str if self.ret_gadget_str else "[dim]None[/dim]"
-                t_left.add_row("Ret Gadget:", f"[yellow]{ret_g}[/yellow] [dim](x86_64 16B align)[/dim]")
+                if info.get("arch") == "amd64":
+                    ret_g = self.ret_gadget_str if self.ret_gadget_str else "[dim]None[/dim]"
+                    t_left.add_row("Ret Gadget:", f"[yellow]{ret_g}[/yellow] [dim](x86_64 16B align)[/dim]")
+                else:
+                    t_left.add_row("Ret Gadget:", f"[dim]N/A ({info['arch']})[/dim]")
 
             p_left = Panel(t_left, title="[bold cyan][ TARGET BINARY & MITIGATIONS ][/bold cyan]", border_style="cyan")
 
@@ -524,7 +535,9 @@ class RichRet2WinTUI:
                 offset_display = "[bold red]Not Found[/bold red] [dim](run Auto-Detect)[/dim]"
             t_right.add_row("Offset:", offset_display)
 
-            if self.align:
+            if info and info.get("arch") != "amd64":
+                align_display = f"[dim]N/A ({info['arch']})[/dim]"
+            elif self.align:
                 align_display = f"[bold green]Enabled[/bold green] [dim](lone ret {self.ret_gadget_str or 'needed'})[/dim]"
             else:
                 align_display = "[dim]Disabled[/dim]"
@@ -728,6 +741,15 @@ class RichRet2WinTUI:
         console.print(f"Target: [bold white]{self.binary_path}[/bold white]  │  Delivery: [bold cyan]{self.input_mode}[/bold cyan]")
         console.print()
 
+        # Check if executable on host upfront
+        if self.binary_info and not self.binary_info.get("executable", True):
+            reason = self.binary_info.get("exec_reason") or "Target architecture cannot execute directly on host."
+            console.print(f"[bold yellow][!] Architecture Mismatch: Foreign binary cannot execute directly on this host.[/bold yellow]")
+            console.print(f"[dim]{reason}[/dim]\n")
+            if confirm("Would you like to manually specify the offset instead?", default=True):
+                self.action_set_offset()
+            return
+
         max_len_str = ask("Max cyclic pattern length", default="2048")
         try:
             max_len = int(max_len_str)
@@ -742,18 +764,53 @@ class RichRet2WinTUI:
             self.set_status(f"Offset found: {offset} bytes (via core dump crash analysis)", "bold green")
             console.print(f"[bold green]✓ Offset successfully detected: {self.offset} bytes![/bold green]")
         except Exception as e:
-            self.set_status(f"Offset detection failed: {e}", "bold red")
-            console.print(f"[bold red]✗ Offset detection failed: {e}[/bold red]")
+            err_msg = str(e)
+            first_line = err_msg.splitlines()[0] if err_msg else "Unknown error"
+            self.set_status(f"Offset detection failed: {first_line}", "bold red")
+            console.print(f"[bold red]✗ Offset detection failed:[/bold red] {err_msg}")
+            if "Foreign" in err_msg or "cannot execute" in err_msg or "Exec format error" in err_msg or "QEMU" in err_msg:
+                console.print()
+                if confirm("Would you like to manually specify the offset instead?", default=True):
+                    self.action_set_offset()
             return
 
         if confirm("Validate this offset now with marker crash test?", default=True):
             self.action_validate_offset()
+
+    def action_set_offset(self):
+        """Manually specify the buffer overflow offset."""
+        console.print()
+        console.print(Rule("[bold cyan][ Set Buffer Overflow Offset ][/bold cyan]"))
+        console.print()
+        cur_disp = f"{self.offset} bytes" if self.offset is not None else "Not set"
+        console.print(f"Current Offset: [bold yellow]{cur_disp}[/bold yellow]")
+        o_str = ask("Enter buffer overflow offset in bytes (or press Enter to cancel)").strip()
+        if not o_str:
+            return
+        try:
+            val = int(o_str, 0)
+            if val < 0:
+                raise ValueError("Offset cannot be negative.")
+            self.offset = val
+            self.offset_validated = False
+            self.set_status(f"Offset manually set to {self.offset} bytes", "bold green")
+            console.print(f"[bold green]✓ Offset successfully set to: {self.offset} bytes![/bold green]")
+        except ValueError:
+            self.set_status(f"Invalid offset '{o_str}': must be a non-negative integer.", "bold red")
+            console.print(f"[bold red]✗ Invalid offset '{o_str}': must be a non-negative integer.[/bold red]")
 
     def action_validate_offset(self):
         """Sanity check proposed offset with marker bytes."""
         if not self.binary_path or self.offset is None:
             self.set_status("Target binary and offset must be set before validation.", "bold red")
             console.print("[bold red]✗ Target binary and offset must be set before validation.[/bold red]")
+            return
+
+        if self.binary_info and not self.binary_info.get("executable", True):
+            reason = self.binary_info.get("exec_reason") or "Target architecture cannot execute directly on host."
+            self.set_status("Validation skipped: binary cannot execute without QEMU emulation.", "yellow")
+            console.print(f"[bold yellow][!] Validation skipped:[/bold yellow] Foreign architecture requires QEMU emulation.")
+            console.print(f"[dim]{reason}[/dim]")
             return
 
         console.print(f"[cyan][*] Validating offset {self.offset} with test marker crash...[/cyan]")
@@ -808,6 +865,12 @@ class RichRet2WinTUI:
 
     def action_toggle_align(self):
         """Toggle 16-byte stack alignment ret gadget."""
+        if self.binary_info and self.binary_info.get("arch") != "amd64":
+            arch = self.binary_info.get("arch")
+            self.set_status(f"16-byte stack alignment (lone ret) is only for x86_64 (amd64). Not applicable to {arch}.", "yellow")
+            console.print(f"[yellow][!] 16-byte stack alignment (lone ret) is only for x86_64 (amd64). Not applicable to {arch}.[/yellow]")
+            return
+
         self.align = not self.align
         if self.align and not self.ret_gadget_str:
             if self.binary_info and self.binary_info.get("ret_gadget"):
@@ -1623,8 +1686,10 @@ class RichRet2WinTUI:
                     break
                 elif cmd in ("1", "binary", "bin", "select"):
                     self.action_select_binary()
-                elif cmd in ("2", "detect", "auto", "offset"):
+                elif cmd in ("2", "detect", "auto"):
                     self.action_detect_offset()
+                elif cmd in ("o", "offset", "set_offset"):
+                    self.action_set_offset()
                 elif cmd in ("3", "validate", "verify"):
                     self.action_validate_offset()
                 elif cmd in ("4", "win", "target"):

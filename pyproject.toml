@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ret2win"
+version = "1.3.0"
+description = "Automated CTF Return-to-Win Exploitation Toolkit & Interactive Rich TUI"
+readme = "README.md"
+authors = [
+    { name = "Casper", email = "vishal.r.dev07@gmail.com" }
+]
+license = { text = "MIT" }
+requires-python = ">=3.8"
+keywords = ["ctf", "pwn", "binary-exploitation", "ret2win", "buffer-overflow", "rop", "pwntools", "security"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+]
+dependencies = [
+    "pwntools>=4.11.0",
+    "rich>=13.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Vishal-07-R/Ret2Win"
+Repository = "https://github.com/Vishal-07-R/Ret2Win.git"
+Issues = "https://github.com/Vishal-07-R/Ret2Win/issues"
+
+[project.scripts]
+ret2win = "ret2win:main"
+
+[tool.setuptools]
+py-modules = ["ret2win", "core", "tui"]

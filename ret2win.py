@@ -13,8 +13,8 @@ import argparse
 import os
 import sys
 
-# Ensure local imports work regardless of launch directory
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Ensure local imports work regardless of launch directory or symlink resolution
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
 import builtins
 _orig_input = builtins.input
@@ -45,6 +45,7 @@ from tui import launch_tui, create_header_renderable
 find_offset = core.find_offset
 build_payload = core.build_payload
 validate_offset = core.validate_offset
+check_binary_executable = core.check_binary_executable
 
 
 def main():
@@ -157,7 +158,11 @@ def main():
         offset = args.offset
         log.info(f"Using supplied offset: {offset}")
     else:
-        offset = core.find_offset(args.binary, max_len=args.max_len, input_mode=args.input_mode)
+        try:
+            offset = core.find_offset(args.binary, max_len=args.max_len, input_mode=args.input_mode)
+        except Exception as e:
+            console.print(f"[bold red][!] Offset detection failed:[/bold red]\n{e}\n[dim]Pass --offset manually if known.[/dim]")
+            sys.exit(1)
 
     if args.validate_offset:
         log.info(f"Validating offset ({offset}) on target binary...")

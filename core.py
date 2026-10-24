@@ -12,6 +12,8 @@ import glob
 import tempfile
 import subprocess
 import shutil
+import errno
+import platform
 from typing import Optional, Dict, Any, List, Tuple
 
 import builtins
@@ -42,6 +44,7 @@ context.log_level = 'error'
 
 __all__ = [
     "analyze_binary",
+    "check_binary_executable",
     "find_offset",
     "parse_address",
     "build_payload",
@@ -144,7 +147,7 @@ def clean_core_dumps(directory: Optional[str] = None):
     if directory and os.path.abspath(directory) != os.path.abspath("."):
         dirs.append(directory)
     for d in dirs:
-        for pattern in ["core", "core.[0-9]*", "core.*.coredumpctl", "core.*.apport"]:
+        for pattern in ["core", "core.[0-9]*", "core.*.coredumpctl", "core.*.apport", "qemu_*.core"]:
             for f in glob.glob(os.path.join(d, pattern)):
                 if f.endswith(".py"):
                     continue
@@ -152,6 +155,118 @@ def clean_core_dumps(directory: Optional[str] = None):
                     os.remove(f)
                 except OSError:
                     pass
+
+
+def get_host_arch() -> str:
+    """Returns normalized host machine architecture."""
+    m = platform.machine().lower()
+    if m in ("x86_64", "amd64"):
+        return "amd64"
+    if m in ("i386", "i686", "x86"):
+        return "i386"
+    if m in ("aarch64", "arm64"):
+        return "aarch64"
+    if m.startswith("arm"):
+        return "arm"
+    return m
+
+
+def check_binary_executable(binary_path: str) -> Tuple[bool, Optional[str]]:
+    """
+    Determines whether a target binary can be executed locally on this host.
+    Returns (True, None) if natively executable.
+    Returns (True, "Emulated via ...") if foreign but an emulator is detected.
+    Returns (False, detailed_reason) if execution will fail due to architecture mismatch.
+    """
+    if not os.path.isfile(binary_path):
+        return False, f"File not found: {binary_path}"
+
+    try:
+        elf = ELF(binary_path, checksec=False)
+    except Exception as e:
+        return False, f"Could not parse ELF binary: {e}"
+
+    host_arch = get_host_arch()
+    target_arch = (elf.arch or "").lower()
+
+    # Native architecture checks
+    if host_arch == "amd64" and target_arch in ("amd64", "i386"):
+        return True, None
+    if host_arch == "aarch64" and target_arch in ("aarch64", "arm"):
+        return True, None
+    if target_arch == host_arch:
+        return True, None
+
+    # Check for QEMU user emulation
+    qemu_bin = None
+    try:
+        from pwn import qemu
+        qemu_bin = qemu.user_path(arch=target_arch)
+    except Exception:
+        pass
+
+    if not qemu_bin:
+        qemu_bin = shutil.which(f"qemu-{target_arch}") or shutil.which(f"qemu-{target_arch}-static")
+
+    if qemu_bin:
+        return True, f"Emulated via {os.path.basename(qemu_bin)}"
+
+    # Check kernel binfmt_misc
+    binfmt_entry = f"/proc/sys/fs/binfmt_misc/qemu-{target_arch}"
+    if os.path.isfile(binfmt_entry):
+        return True, f"Emulated via binfmt_misc ({os.path.basename(binfmt_entry)})"
+
+    reason = (
+        f"Target architecture '{target_arch}' ({elf.bits}-bit) cannot execute directly on host '{host_arch}'.\n"
+        f"Local execution requires QEMU user-mode emulation:\n"
+        f"  • Arch/CachyOS: sudo pacman -S qemu-user qemu-user-binfmt\n"
+        f"  • Debian/Ubuntu: sudo apt install qemu-user qemu-user-static"
+    )
+    return False, reason
+
+
+def _extract_ip_from_core(core_dump, elf) -> Optional[int]:
+    """Cross-platform helper to extract instruction pointer / program counter."""
+    try:
+        val = core_dump.pc
+        if val is not None and val != 0:
+            return val
+    except Exception:
+        pass
+
+    for attr in ("rip", "eip", "pc"):
+        val = getattr(core_dump, attr, None)
+        if val is not None and val != 0:
+            return val
+
+    regs = getattr(core_dump, "registers", {}) or {}
+    for r in ("rip", "eip", "pc", "x30", "lr", "ra"):
+        if r in regs and regs[r]:
+            return regs[r]
+
+    return None
+
+
+def _extract_sp_from_core(core_dump, elf) -> Optional[int]:
+    """Cross-platform helper to extract stack pointer."""
+    try:
+        val = core_dump.sp
+        if val is not None and val != 0:
+            return val
+    except Exception:
+        pass
+
+    for attr in ("rsp", "esp", "sp"):
+        val = getattr(core_dump, attr, None)
+        if val is not None and val != 0:
+            return val
+
+    regs = getattr(core_dump, "registers", {}) or {}
+    for r in ("rsp", "esp", "sp", "x31"):
+        if r in regs and regs[r]:
+            return regs[r]
+
+    return None
 
 
 def analyze_binary(path: str) -> Dict[str, Any]:
@@ -167,9 +282,9 @@ def analyze_binary(path: str) -> Dict[str, Any]:
 
     candidates = _find_win_candidates(elf)
 
-    # Search for a lone ret gadget for x86_64 stack alignment
+    # Search for a lone ret gadget for x86_64 stack alignment ONLY
     ret_gadget = None
-    if bits == 64:
+    if bits == 64 and elf.arch == "amd64":
         # First try pwntools ROP gadget finder
         try:
             rop = ROP(elf)
@@ -187,6 +302,8 @@ def analyze_binary(path: str) -> Dict[str, Any]:
             except (StopIteration, Exception):
                 pass
 
+    can_run, exec_reason = check_binary_executable(path)
+
     return {
         "path": path,
         "arch": elf.arch,
@@ -198,7 +315,9 @@ def analyze_binary(path: str) -> Dict[str, Any]:
         "relro": str(elf.relro),
         "candidates": candidates,
         "ret_gadget": ret_gadget,
-        "symbols": {k: hex(v) for k, v in elf.symbols.items() if isinstance(k, str) and not k.startswith("got.")}
+        "symbols": {k: hex(v) for k, v in elf.symbols.items() if isinstance(k, str) and not k.startswith("got.")},
+        "executable": can_run,
+        "exec_reason": exec_reason,
     }
 
 
@@ -297,30 +416,45 @@ def find_offset(binary_path: str, max_len: int = 2048, input_mode: str = "stdin"
 
     binary_dir = os.path.dirname(os.path.abspath(binary_path)) or "."
     clean_core_dumps(binary_dir)
+
+    can_run, exec_reason = check_binary_executable(binary_path)
+    if not can_run:
+        raise RuntimeError(exec_reason)
+
     _log(f"Launching {binary_path} with {max_len}-byte cyclic pattern...", "cyan")
 
     timed_out = False
     # Run process
-    if input_mode == "stdin":
-        p = process(binary_path, cwd=binary_dir)
-        try:
-            p.sendline(pattern)
+    try:
+        if input_mode == "stdin":
+            p = process(binary_path, cwd=binary_dir)
+            try:
+                p.sendline(pattern)
+                try:
+                    p.wait(timeout=3.0)
+                except Exception:
+                    timed_out = True
+                    p.kill()
+            except EOFError:
+                pass
+        elif input_mode == "argv":
+            p = process([binary_path, pattern], cwd=binary_dir)
             try:
                 p.wait(timeout=3.0)
             except Exception:
                 timed_out = True
                 p.kill()
-        except EOFError:
-            pass
-    elif input_mode == "argv":
-        p = process([binary_path, pattern], cwd=binary_dir)
-        try:
-            p.wait(timeout=3.0)
-        except Exception:
-            timed_out = True
-            p.kill()
-    else:
-        raise ValueError(f"Unsupported input mode: {input_mode}")
+        else:
+            raise ValueError(f"Unsupported input mode: {input_mode}")
+    except OSError as e:
+        if e.errno == errno.ENOEXEC or "Exec format error" in str(e):
+            raise RuntimeError(
+                f"Target binary '{os.path.basename(binary_path)}' ({elf.arch}) cannot be executed on host ({platform.machine()}).\n"
+                f"To run foreign architecture binaries, install QEMU user emulation:\n"
+                f"  • Arch/CachyOS: sudo pacman -S qemu-user qemu-user-binfmt\n"
+                f"  • Debian/Ubuntu: sudo apt install qemu-user qemu-user-static"
+            ) from e
+        raise
 
     output_preview = b""
     try:
@@ -373,7 +507,7 @@ def find_offset(binary_path: str, max_len: int = 2048, input_mode: str = "stdin"
     offset = -1
     detected_reg = "unknown"
 
-    # Strategy 1: Check faulting address (on x86_64 non-canonical ret crashes, fault_addr holds the popped value)
+    # Strategy 1: Check faulting address (on non-canonical ret crashes or invalid jump targets)
     fault_addr = getattr(core_dump, "fault_addr", 0)
     if fault_addr and fault_addr != 0:
         try:
@@ -384,20 +518,35 @@ def find_offset(binary_path: str, max_len: int = 2048, input_mode: str = "stdin"
         except Exception:
             pass
 
-    # Strategy 2: Check RIP / EIP
-    ip = getattr(core_dump, "rip" if elf.bits == 64 else "eip", 0)
+    # Strategy 2: Check IP / PC / Link register across architectures
+    ip = _extract_ip_from_core(core_dump, elf)
     if offset < 0 and ip and ip != 0:
         try:
             idx = cyclic_find(ip & 0xFFFFFFFF)
             if idx >= 0:
                 offset = idx
-                detected_reg = f"instruction pointer ({hex(ip)})"
+                detected_reg = f"instruction pointer / PC ({hex(ip)})"
         except Exception:
             pass
 
-    # Strategy 3: Check stack pointer (RSP / ESP)
+    # Check ARM/AArch64/MIPS Link Register explicitly if not found yet
     if offset < 0:
-        sp = getattr(core_dump, "rsp" if elf.bits == 64 else "esp", 0)
+        regs = getattr(core_dump, "registers", {}) or {}
+        for lr_reg in ("x30", "lr", "ra"):
+            lr_val = regs.get(lr_reg, 0)
+            if lr_val and lr_val != 0:
+                try:
+                    idx = cyclic_find(lr_val & 0xFFFFFFFF)
+                    if idx >= 0:
+                        offset = idx
+                        detected_reg = f"link register {lr_reg} ({hex(lr_val)})"
+                        break
+                except Exception:
+                    pass
+
+    # Strategy 3: Check stack pointer (RSP / ESP / SP)
+    if offset < 0:
+        sp = _extract_sp_from_core(core_dump, elf)
         if sp and sp != 0:
             ws = elf.bytes
             for sp_offset in [0, -ws, ws, -2 * ws, 2 * ws]:
@@ -412,13 +561,14 @@ def find_offset(binary_path: str, max_len: int = 2048, input_mode: str = "stdin"
                     pass
 
     try:
-        clean_core_dumps()
+        clean_core_dumps(binary_dir)
     except Exception:
         pass
 
     if offset < 0:
+        ip_display = hex(ip) if ip is not None else "None"
         raise RuntimeError(
-            f"Could not find cyclic pattern in crash registers (fault={hex(fault_addr)}, ip={hex(ip)}). "
+            f"Could not find cyclic pattern in crash registers (fault={hex(fault_addr)}, ip={ip_display}). "
             "The crash did not overwrite the instruction pointer or stack with the pattern. "
             "Increase --max-len or set --offset manually."
         )
@@ -693,26 +843,37 @@ def validate_offset(binary_path: str, offset: int, input_mode: str = "stdin") ->
 
     binary_dir = os.path.dirname(os.path.abspath(binary_path)) or "."
     clean_core_dumps(binary_dir)
+
+    can_run, _ = check_binary_executable(binary_path)
+    if not can_run:
+        clean_core_dumps(binary_dir)
+        return False
+
     timed_out = False
-    if input_mode == "stdin":
-        p = process(binary_path, cwd=binary_dir)
-        try:
-            p.sendline(payload)
+    try:
+        if input_mode == "stdin":
+            p = process(binary_path, cwd=binary_dir)
+            try:
+                p.sendline(payload)
+                try:
+                    p.wait(timeout=3.0)
+                except Exception:
+                    timed_out = True
+                    p.kill()
+            except EOFError:
+                pass
+        elif input_mode == "argv":
+            p = process([binary_path, payload], cwd=binary_dir)
             try:
                 p.wait(timeout=3.0)
             except Exception:
                 timed_out = True
                 p.kill()
-        except EOFError:
-            pass
-    elif input_mode == "argv":
-        p = process([binary_path, payload], cwd=binary_dir)
-        try:
-            p.wait(timeout=3.0)
-        except Exception:
-            timed_out = True
-            p.kill()
-    else:
+        else:
+            clean_core_dumps(binary_dir)
+            return False
+    except OSError:
+        clean_core_dumps(binary_dir)
         return False
 
     poll = p.poll()
@@ -739,25 +900,30 @@ def validate_offset(binary_path: str, offset: int, input_mode: str = "stdin") ->
     if getattr(core_dump, "fault_addr", 0) == expected_num:
         matched = True
 
-    # Check 2: instruction pointer (exact match only -- a masked/truncated
-    # comparison here would let a partially-overlapping marker on a wrong
-    # offset falsely "validate", since the marker bytes are a repeating
-    # 0x42 pattern that can coincidentally share low bits with a near-miss)
-    ip = core_dump.rip if bits == 64 else core_dump.eip
+    # Check 2: instruction pointer / PC / link register
+    ip = _extract_ip_from_core(core_dump, elf)
     if ip == expected_num:
         matched = True
 
-    # Check 3: stack value at SP or SP-8
-    sp = core_dump.rsp if bits == 64 else core_dump.esp
-    ws = elf.bytes
-    for sp_offset in [0, -ws, ws]:
-        try:
-            val = core_dump.read(sp + sp_offset, len(marker))
-            if val == marker:
-                matched = True
-                break
-        except Exception:
-            pass
+    # Check ARM/AArch64/MIPS Link Register explicitly
+    regs = getattr(core_dump, "registers", {}) or {}
+    for lr_reg in ("x30", "lr", "ra"):
+        if regs.get(lr_reg) == expected_num:
+            matched = True
+            break
 
-    clean_core_dumps()
+    # Check 3: stack value at SP or SP-8
+    sp = _extract_sp_from_core(core_dump, elf)
+    if sp:
+        ws = elf.bytes
+        for sp_offset in [0, -ws, ws]:
+            try:
+                val = core_dump.read(sp + sp_offset, len(marker))
+                if val == marker:
+                    matched = True
+                    break
+            except Exception:
+                pass
+
+    clean_core_dumps(binary_dir)
     return matched
