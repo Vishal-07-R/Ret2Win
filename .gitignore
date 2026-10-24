@@ -6,4 +6,8 @@ core.[0-9]*
 core
 vuln
 solve.py
+build/
+dist/
+*.egg-info/
+.venv-build/
 .pytest_cache/

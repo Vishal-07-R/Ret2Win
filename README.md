@@ -16,6 +16,7 @@
 </p>
 
 <p align="center">
+  <a href="https://pypi.org/project/ret2win/"><img src="https://img.shields.io/pypi/v/ret2win.svg?style=for-the-badge&logo=pypi&logoColor=white" alt="PyPI Version" /></a>
   <a href="https://github.com/Vishal-07-R/Ret2Win/releases"><img src="https://img.shields.io/badge/version-1.3.0-blue.svg?style=for-the-badge&logo=git&logoColor=white" alt="Version 1.3.0" /></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.8%2B-blueviolet.svg?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.8+" /></a>
   <a href="https://github.com/Gallopsled/pwntools"><img src="https://img.shields.io/badge/Powered%20By-Pwntools%20%26%20Rich-ff69b4.svg?style=for-the-badge" alt="Pwntools & Rich" /></a>
@@ -168,9 +169,23 @@ Ret2Win visually separates every component of the attack buffer:
 
 ## 🚀 Installation
 
-Ret2Win provides an automated, universal installation script supporting all major Linux distributions and macOS. It cleanly handles Python environments without conflicting with PEP 668 (`externally-managed-environment`).
+Ret2Win can be installed via **PyPI**, the **universal installer script**, or directly from source.
 
-### Method 1: Universal Installer (Recommended)
+### Method 1: Install from PyPI (Simplest)
+
+Install globally via `pipx` or inside a virtual environment:
+
+```bash
+# Recommended for CLI tools on modern Linux (PEP 668)
+pipx install ret2win
+
+# Or via standard pip in your active environment
+pip install ret2win
+```
+
+---
+
+### Method 2: Universal Automated Installer (Recommended for Local Git Repo)
 
 Clone the repository and run the installer:
 
@@ -192,7 +207,7 @@ sudo ./install.sh --system  # System-wide install for all users (/usr/local/bin/
 
 ---
 
-### Method 2: Modern Python Packaging (`pipx` / `pip`)
+### Method 3: From Source (`git`)
 
 #### Using `pipx` (Isolated user application):
 ```bash
