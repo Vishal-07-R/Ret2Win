@@ -3,12 +3,12 @@
 #  Ret2Win - Automated CTF Return-to-Win Exploitation Toolkit
 #  Universal Installation & Setup Script
 #  Author: Casper (Vishal-07-R)
-#  Version: 1.3.0
+#  Version: 1.3.1
 # ==============================================================================
 
 set -e
 
-VERSION="1.3.0"
+VERSION="1.3.1"
 APP_NAME="ret2win"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

@@ -7,7 +7,7 @@ Supports both a rich interactive TUI (via --tui or zero-arg invocation)
 and a fully scriptable command-line interface.
 """
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 
 import argparse
 import os
